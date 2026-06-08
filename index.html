@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arena Shooter 1v1 Online</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background-color: #1a1a1a;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Tela Inicial / Menu */
+        #menu {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            background: #2a2a2a;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+        }
+
+        h1 { color: #ff4757; margin-bottom: 10px; }
+        button {
+            background: #ff4757;
+            color: white;
+            border: none;
+            padding: 12px;
+            font-size: 16px;
+            font-weight: bold;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        button:hover { background: #ff6b81; }
+        input {
+            padding: 12px;
+            font-size: 16px;
+            border-radius: 5px;
+            border: 2px solid #444;
+            background: #333;
+            color: white;
+            text-align: center;
+        }
+        .status { font-size: 14px; color: #ffa502; margin-top: 10px; }
+        .room-code { font-size: 20px; font-weight: bold; color: #2ed573; user-select: all; }
+
+        /* Tela do Jogo */
+        #game-container {
+            display: none;
+            position: relative;
+        }
+
+        #hud {
+            display: flex;
+            justify-content: space-between;
+            width: 800px;
+            padding: 10px;
+            background: #2a2a2a;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+            font-weight: bold;
+        }
+
+        canvas {
+            background: #111;
+            border: 4px solid #2a2a2a;
+            border-bottom-left-radius: 8px;
+            border-bottom-right-radius: 8px;
+            display: block;
+        }
+
+        .controls-hint {
+            margin-top: 15px;
+            color: #aaa;
+            font-size: 14px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="menu">
+        <h1>Shooter 1v1</h1>
+        <p>Jogue com um amigo pela internet</p>
+        
+        <button id="btn-create">Criar Sala</button>
+        
+        <hr style="border: 1px solid #444;">
+        
+        <input type="text" id="input-room" placeholder="Cole o código da sala aqui">
+        <button id="btn-join" style="background: #2ed573;">Entrar na Sala</button>
+        
+        <div id="status-text" class="status">Aguardando ação...</div>
+    </div>
+
+    <div id="game-container">
+        <div id="hud">
+            <span id="score-p1" style="color: #3498db;">Jogador 1: 0</span>
+            <span id="game-status" style="color: #ffa502;">Partida Iniciada</span>
+            <span id="score-p2" style="color: #e74c3c;">Jogador 2: 0</span>
+        </div>
+        <canvas id="gameCanvas" width="800" height="500"></canvas>
+        <div class="controls-hint">Controles: W, A, S, D para mover | Clique no mouse para atirar</div>
+    </div>
+
+    <script>
+        // --- CONFIGURAÇÕES DE REDE (PEERJS) ---
+        let peer = null;
+        let conn = null;
+        let isHost = false;
+        let myId = "";
+        
+        const menu = document.getElementById('menu');
+        const gameContainer = document.getElementById('game-container');
+        const statusText = document.getElementById('status-text');
+        const btnCreate = document.getElementById('btn-create');
+        const btnJoin = document.getElementById('btn-join');
+        const inputRoom = document.getElementById('input-room');
+
+        // Inicializa o PeerJS automático nos servidores públicos deles
+        function initPeer() {
+            peer = new Peer();
+            
+            peer.on('open', (id) => {
+                myId = id;
+            });
+
+            peer.on('error', (err) => {
+                console.error(err);
+                statusText.innerText = "Erro de conexão. Tente novamente.";
+            });
+        }
+        initPeer();
+
+        // Ação: Criar Sala (Host)
+        btnCreate.addEventListener('click', () => {
+            if (!myId) return alert("Ainda conectando ao servidor local, aguarde um segundo...");
+            isHost = true;
+            statusText.innerHTML = `Sala criada! Passe o código abaixo para seu amigo:<br><br><span class="room-code">${myId}</span><br><br>Aguardando o outro jogador entrar...`;
+            btnCreate.disabled = true;
+            btnJoin.disabled = true;
+
+            // Escuta quando o convidado se conectar
+            peer.on('connection', (connection) => {
+                conn = connection;
+                setupConnection();
+            });
+        });
+
+        // Ação: Entrar na Sala (Convidado)
+        btnJoin.addEventListener('click', () => {
+            const roomCode = inputRoom.value.trim();
+            if (!roomCode) return alert("Digite um código de sala válido!");
+            
+            isHost = false;
+            statusText.innerText = "Conectando à sala...";
+            
+            conn = peer.connect(roomCode);
+            setupConnection();
+        });
+
+        // Configura os callbacks de comunicação do canal criado
+        function setupConnection() {
+            conn.on('open', () => {
+                statusText.innerText = "Conectado! Iniciando o jogo...";
+                setTimeout(() => {
+                    menu.style.display = 'none';
+                    gameContainer.style.display = 'block';
+                    initGame();
+                }, 1000);
+            });
+
+            conn.on('data', (data) => {
+                handleNetworkData(data);
+            });
+
+            conn.on('close', () => {
+                alert("O outro jogador desconectou.");
+                window.location.reload();
+            });
+        }
+
+        // --- LÓGICA DO JOGO ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Estrutura dos jogadores
+        let p1 = { x: 100, y: 250, size: 20, color: '#3498db', score: 0, hp: 100 };
+        let p2 = { x: 700, y: 250, size: 20, color: '#e74c3c', score: 0, hp: 100 };
+        
+        // Referências locais dependendo se você é P1 (Host) ou P2 (Convidado)
+        let myCharacter;
+        let enemyCharacter;
+
+        let bullets = []; // {x, y, vx, vy, owner}
+        let keys = {};
+        let mousePos = { x: 0, y: 0 };
+
+        function initGame() {
+            if (isHost) {
+                myCharacter = p1;
+                enemyCharacter = p2;
+            } else {
+                myCharacter = p2;
+                enemyCharacter = p1;
+            }
+
+            // Ouvintes de teclado e mouse
+            window.addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+            window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+            
+            canvas.addEventListener('mousemove', (e) => {
+                const rect = canvas.getBoundingClientRect();
+                mousePos.x = e.clientX - rect.left;
+                mousePos.y = e.clientY - rect.top;
+            });
+
+            canvas.addEventListener('mousedown', () => {
+                shoot();
+            });
+
+            // Loop Principal do Jogo
+            setInterval(update, 1000 / 60); // 60 FPS
+        }
+
+        function shoot() {
+            if (myCharacter.hp <= 0) return;
+
+            // Calcula direção do tiro baseado no mouse
+            let dx = mousePos.x - myCharacter.x;
+            let dy = mousePos.y - myCharacter.y;
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            let speed = 7;
+            
+            let bullet = {
+                x: myCharacter.x,
+                y: myCharacter.y,
+                vx: (dx / dist) * speed,
+                vy: (dy / dist) * speed,
+                owner: isHost ? 'p1' : 'p2'
+            };
+
+            bullets.push(bullet);
+
+            // Avisa o outro jogador sobre o tiro lançado
+            sendNetData({ type: 'shoot', bullet: bullet });
+        }
+
+        // Envia dados de rede
+        function sendNetData(data) {
+            if (conn && conn.open) {
+                conn.send(data);
+            }
+        }
+
+        // Processa dados vindos do outro jogador
+        function handleNetworkData(data) {
+            if (data.type === 'move') {
+                enemyCharacter.x = data.x;
+                enemyCharacter.y = data.y;
+            } 
+            else if (data.type === 'shoot') {
+                bullets.push(data.bullet);
+            }
+            else if (data.type === 'hit') {
+                // Sincroniza estados cruciais validados pelo Host
+                p1.hp = data.p1Hp;
+                p2.hp = data.p2Hp;
+                p1.score = data.p1Score;
+                p2.score = data.p2Score;
+                
+                if(p1.hp <= 0 || p2.hp <= 0) {
+                    respawnPlayers();
+                }
+            }
+        }
+
+        function respawnPlayers() {
+            p1.x = 100; p1.y = 250; p1.hp = 100;
+            p2.x = 700; p2.y = 250; p2.hp = 100;
+            bullets = [];
+        }
+
+        // Atualização lógica do jogo
+        function update() {
+            // 1. Movimentação Local
+            let moved = false;
+            let speed = 4;
+
+            if ((keys['w'] || keys['arrowup']) && myCharacter.y > myCharacter.size) { myCharacter.y -= speed; moved = true; }
+            if ((keys['s'] || keys['arrowdown']) && myCharacter.y < canvas.height - myCharacter.size) { myCharacter.y += speed; moved = true; }
+            if ((keys['a'] || keys['arrowleft']) && myCharacter.x > myCharacter.size) { myCharacter.x -= speed; moved = true; }
+            if ((keys['d'] || keys['arrowright']) && myCharacter.x < canvas.width - myCharacter.size) { myCharacter.x += speed; moved = true; }
+
+            // Se mudou de posição, avisa o adversário
+            if (moved && myCharacter.hp > 0) {
+                sendNetData({ type: 'move', x: myCharacter.x, y: myCharacter.y });
+            }
+
+            // 2. Movimentação e colisão de projéteis (Processado por ambos, mas validado pelo Host)
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                let b = bullets[i];
+                b.x += b.vx;
+                b.y += b.vy;
+
+                // Destruir bala se sair da tela
+                if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
+                    bullets.splice(i, 1);
+                    continue;
+                }
+
+                // Apenas o HOST gerencia e valida as colisões para evitar bugs de dessincronização
+                if (isHost) {
+                    // Testar colisão com P1
+                    let distP1 = Math.hypot(b.x - p1.x, b.y - p1.y);
+                    if (b.owner === 'p2' && distP1 < p1.size && p1.hp > 0) {
+                        p1.hp -= 20;
+                        bullets.splice(i, 1);
+                        if (p1.hp <= 0) { p2.score++; respawnPlayers(); }
+                        sendHitUpdate();
+                        continue;
+                    }
+
+                    // Testar colisão com P2
+                    let distP2 = Math.hypot(b.x - p2.x, b.y - p2.y);
+                    if (b.owner === 'p1' && distP2 < p2.size && p2.hp > 0) {
+                        p2.hp -= 20;
+                        bullets.splice(i, 1);
+                        if (p2.hp <= 0) { p1.score++; respawnPlayers(); }
+                        sendHitUpdate();
+                        continue;
+                    }
+                }
+            }
+
+            draw();
+        }
+
+        function sendHitUpdate() {
+            sendNetData({
+                type: 'hit',
+                p1Hp: p1.hp, p2Hp: p2.hp,
+                p1Score: p1.score, p2Score: p2.score
+            });
+        }
+
+        // Renderização gráfica na tela
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Desenhar Linha Central da Arena
+            ctx.strokeStyle = '#222';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(canvas.width / 2, 0);
+            ctx.lineTo(canvas.width / 2, canvas.height);
+            ctx.stroke();
+
+            // Desenhar Jogador 1 (Azul)
+            if (p1.hp > 0) {
+                ctx.fillStyle = p1.color;
+                ctx.beginPath();
+                ctx.arc(p1.x, p1.y, p1.size, 0, Math.PI * 2);
+                ctx.fill();
+                // Barra de Vida P1
+                ctx.fillStyle = '#cc1111';
+                ctx.fillRect(p1.x - 20, p1.y - 35, 40, 6);
+                ctx.fillStyle = '#00ff00';
+                ctx.fillRect(p1.x - 20, p1.y - 35, 40 * (p1.hp / 100), 6);
+            }
+
+            // Desenhar Jogador 2 (Vermelho)
+            if (p2.hp > 0) {
+                ctx.fillStyle = p2.color;
+                ctx.beginPath();
+                ctx.arc(p2.x, p2.y, p2.size, 0, Math.PI * 2);
+                ctx.fill();
+                // Barra de Vida P2
+                ctx.fillStyle = '#cc1111';
+                ctx.fillRect(p2.x - 20, p2.y - 35, 40, 6);
+                ctx.fillStyle = '#00ff00';
+                ctx.fillRect(p2.x - 20, p2.y - 35, 40 * (p2.hp / 100), 6);
+            }
+
+            // Desenhar Tiros
+            ctx.fillStyle = '#f1c40f';
+            bullets.forEach(b => {
+                ctx.beginPath();
+                ctx.arc(b.x, b.y, 4, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Atualizar placar no painel
+            document.getElementById('score-p1').innerText = `Jogador 1: ${p1.score}`;
+            document.getElementById('score-p2').innerText = `Jogador 2: ${p2.score}`;
+        }
+    </script>
+</body>
+</html>
